@@ -45,11 +45,7 @@ REGLAS OBLIGATORIAS - SIEMPRE CUMPLIR:
   - RESTO: cualquier otro producto
 - Por defecto EXCLUYE seguros e instalaciones
 - Búsquedas: usar LIKE con lower() para mayúsculas/minúsculas
-
-OBLIGATORIO - después de obtener el total, SIEMPRE haz estas consultas adicionales:
-1. Desglose por tipo: PUERTAS, SEGUROS, INSTALACIONES, RESTO (usa SUM(cantidad) por tipo)
-2. Top 5 productos más vendidos (agrupa por descripcion, suma cantidad, ordena descendente)
-3. Luego presenta TODOS los resultados juntos
+- IMPORTANTE: NUNCA uses punto y coma (;) al final de las consultas SQL
 
 Tienes acceso a estas herramientas:
 - query_ventas: Ejecuta consultas SQL SELECT en la tabla de ventas
@@ -67,7 +63,7 @@ Cuando el usuario pregunte sobre ventas, usa las herramientas para obtener los d
         content: m.parts?.[0]?.text || m.content || ""
       }))
     ],
-    model: "openai/gpt-oss-120b:free",
+    model: "x-ai/grok-4.1-fast",
     tools: [
       {
         type: "function",
@@ -193,7 +189,7 @@ Cuando el usuario pregunte sobre ventas, usa las herramientas para obtener los d
       }))
     ];
 
-    let maxRounds = 3;
+    let maxRounds = 6;
     let round = 0;
     let lastContent = "";
     let allToolResults: {query: string, result: string}[] = [];
@@ -220,6 +216,40 @@ Cuando el usuario pregunte sobre ventas, usa las herramientas para obtener los d
           result = await callMCPTool("query_ventas", args);
           const queryStr = (args as any).query || "";
           allToolResults.push({ query: queryStr, result: result });
+          
+          // Auto generate breakdown if this is a sales query
+          if (queryStr.toLowerCase().includes('ventas') || queryStr.toLowerCase().includes('cantidad') || queryStr.toLowerCase().includes('puertas')) {
+            try {
+              // Extract filters from original query
+              const whereMatch = queryStr.match(/WHERE\s+([\s\S]+?)(?:\s+GROUP|\s+ORDER|\s+LIMIT|\s*$)/i);
+              let filters = whereMatch ? whereMatch[1] : "1=1";
+              
+              // Check if query has puertas filter
+              const isPuertasQuery = queryStr.toLowerCase().includes("descripcion") && 
+                (queryStr.toLowerCase().includes("h-%") || queryStr.toLowerCase().includes("like 'h"));
+              
+              // If puertas query, only get puertas in breakdown
+              let descFilter = "";
+              if (isPuertasQuery) {
+                descFilter = "AND LOWER(descripcion) LIKE 'h-%'";
+              }
+              
+              // Todas las descripciones (desglose completo)
+              const descQuery = `SELECT descripcion, SUM(cantidad) as cantidad
+              FROM ventas_items
+              WHERE ${filters}
+              ${descFilter}
+              AND tipo_de_pago NOT ILIKE '%cancelado%'
+              AND tipo_de_pago NOT ILIKE '%instalación%'
+              GROUP BY descripcion
+              ORDER BY cantidad DESC`;
+              
+              const descResult = await callMCPTool("query_ventas", { query: descQuery });
+              allToolResults.push({ query: "desglose_descripcion", result: descResult });
+            } catch (e) {
+              console.log("Auto breakdown error:", e);
+            }
+          }
         } else if (toolName === "get_schema") {
           result = await callMCPTool("get_schema", {});
         } else if (toolName === "get_sucursales") {
@@ -251,7 +281,7 @@ Cuando el usuario pregunte sobre ventas, usa las herramientas para obtener los d
 
       const nextResponse = await openai.chat.completions.create({
         messages: allMessages,
-        model: "openai/gpt-oss-120b:free"
+        model: "x-ai/grok-4.1-fast"
       });
 
       const nextMessage = nextResponse.choices[0]?.message;
@@ -306,42 +336,62 @@ Cuando el usuario pregunte sobre ventas, usa las herramientas para obtener los d
       }
       
       if (!nextToolCalls || nextToolCalls.length === 0) {
-        // If we have tool results, format them nicely with another LLM call
+        // Build clean response from tool results
         if (allToolResults.length > 0) {
+          let responseText = "";
+          
+          // First result - the main query
+          const mainResult = allToolResults[0];
           try {
-            const formatPrompt = `El usuario preguntó: "${userText}"
-
-Resultados de las consultas realizadas:
-${allToolResults.map((tr, i) => `Consulta ${i+1}: ${tr.result}`).join('\n\n')}}
-
-PRESENTA LOS RESULTADOS de forma clara y amigable para el usuario. NO muestres las consultas SQL. Solo los datos relevantes y organizados en tablas si es necesario.`;
-
-            const formatResponse = await openai.chat.completions.create({
-              messages: [
-                { role: "system", content: "Eres un asistente que presenta resultados de ventas de forma clara y profesional. Nunca muestres código SQL." },
-                { role: "user", content: formatPrompt }
-              ],
-              model: "openai/gpt-oss-120b:free"
-            });
-
-            const formattedText = formatResponse.choices[0]?.message?.content;
-            if (formattedText) {
-              return new Response(formattedText, {
-                headers: { "Content-Type": "text/plain" }
-              });
+            const main = JSON.parse(mainResult.result);
+            if (main.rows && main.rows.length > 0) {
+              const firstRow = main.rows[0];
+              // Try to find the total field
+              const totalKey = Object.keys(firstRow).find(k => k.toLowerCase().includes('total') || k.toLowerCase().includes('sum'));
+              if (totalKey) {
+                responseText = `Total: ${firstRow[totalKey]}\n\n`;
+              }
             }
-          } catch (e) {
-            console.log("Error formatting:", e);
+          } catch {}
+          
+          // Find desglose_descripcion result
+          const descResult = allToolResults.find(r => r.query === "desglose_descripcion");
+          if (descResult) {
+            try {
+              const desc = JSON.parse(descResult.result);
+              if (desc.rows && desc.rows.length > 0) {
+                responseText += "Desglose por producto:\n";
+                for (const row of desc.rows) {
+                  responseText += `${row.descripcion}: ${row.cantidad}\n`;
+                }
+              }
+            } catch {}
+          }
+          
+          if (responseText) {
+            return new Response(responseText, {
+              headers: { "Content-Type": "text/plain" }
+            });
           }
         }
         
-        // Return content or reasoning if there's no tool call
-        const responseText = lastContent || reasoningToCheck || "Sin respuesta";
-        if (responseText && responseText.length > 10) {
+        // Fallback: clean up response
+        let responseText = (lastContent || reasoningToCheck || "Sin respuesta")
+          .replace(/```[\s\S]*?```/g, '')
+          .replace(/Detalle[\s\S]*/g, '')
+          .replace(/Filtros[\s\S]*/g, '')
+          .replace(/Nota[\s\S]*/g, '')
+          .replace(/\*\*/g, '')
+          .replace(/✅/g, '')
+          .replace(/\n{3,}/g, '\n\n')
+          .trim();
+        
+        if (responseText.length > 10) {
           return new Response(responseText, {
             headers: { "Content-Type": "text/plain" }
           });
         }
+        
         return new Response(nextMessage?.content || lastContent || "Sin respuesta", {
           headers: { "Content-Type": "text/plain" }
         });
