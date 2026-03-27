@@ -32,7 +32,9 @@ export async function POST(req: Request) {
 
   const systemPrompt = `Eres un asistente que ayuda a analizar datos de ventas.${periodInfo}
 
-IMPORTANTE: La tabla de ventas se llama "ventas_items". No uses "ventas" ni "sales".
+IMPORTANTE: 
+- La tabla de ventas se llama "ventas_items". No uses "ventas" ni "sales".
+- Al buscar productos más vendidos, EXCLUYE los productos que contengan "Seguro Gratis" o que empiecen por "Instalacion". Solo inclúyelos si el usuario los menciona explícitamente.
 
 Tienes acceso a estas herramientas:
 - query_ventas: Ejecuta consultas SQL SELECT en la tabla de ventas
@@ -214,17 +216,17 @@ Cuando el usuario pregunte sobre ventas, usa las herramientas para obtener los d
       let nextToolCalls = nextMessage?.tool_calls;
       
       // Save content in case we need to return it
-      if (nextMessage?.content) {
-        lastContent = nextMessage.content;
-      }
+      const contentToCheck = nextMessage?.content || "";
+      const reasoningToCheck = (nextMessage as any)?.reasoning || "";
+      lastContent = contentToCheck;
       
-      // Parse tool calls from content if not in tool_calls field
-      if (!nextToolCalls && nextMessage?.content) {
-        const content = nextMessage.content;
+      // Parse tool calls from content or reasoning if not in tool_calls field
+      if (!nextToolCalls) {
+        const searchText = contentToCheck + " " + reasoningToCheck;
         
-        // Try to find tool call in content
-        const toolMatch = content.match(/"tool"\s*:\s*"(\w+)"/);
-        const argsMatch = content.match(/"arguments"\s*:\s*(\{[\s\S]*?\})/);
+        // Try to find tool call in JSON format
+        const toolMatch = searchText.match(/"tool"\s*:\s*"(\w+)"/);
+        const argsMatch = searchText.match(/"arguments"\s*:\s*(\{[\s\S]*?\})/);
         
         if (toolMatch && argsMatch) {
           const toolName = toolMatch[1];
