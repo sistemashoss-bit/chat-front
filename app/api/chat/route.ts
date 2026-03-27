@@ -161,32 +161,36 @@ Cuando el usuario pregunte sobre ventas, usa las herramientas para obtener los d
         let result = "";
         let args = {};
         try {
-          const argStr = typeof toolCall.function.arguments === 'string' ? toolCall.function.arguments : JSON.stringify(toolCall.function.arguments);
+          const func = (toolCall as any).function || toolCall;
+          const argStr = typeof func.arguments === 'string' ? func.arguments : JSON.stringify(func.arguments || {});
           args = argStr ? JSON.parse(argStr) : {};
         } catch (e) { 
           console.log("Error parsing args:", e);
           args = {}; 
         }
         
-        if (toolCall.function.name === "query_ventas") {
+        const func = (toolCall as any).function || toolCall;
+        const toolName = func.name;
+        
+        if (toolName === "query_ventas") {
           result = await callMCPTool("query_ventas", args);
-        } else if (toolCall.function.name === "get_schema") {
+        } else if (toolName === "get_schema") {
           result = await callMCPTool("get_schema", {});
-        } else if (toolCall.function.name === "get_sucursales") {
+        } else if (toolName === "get_sucursales") {
           result = await callMCPTool("get_sucursales", {});
-        } else if (toolCall.function.name === "get_available_period") {
+        } else if (toolName === "get_available_period") {
           result = await callMCPTool("get_available_period", {});
         }
         
         toolResults.push({ toolCallId: toolCall.id, result });
       }
 
-      const assistantToolCalls = toolCalls.map((tc, i) => ({
+      const assistantToolCalls = toolCalls.map((tc: any, i: number) => ({
         id: tc.id || `call_${i}`,
         type: "function" as const,
         function: {
-          name: tc.function.name,
-          arguments: typeof tc.function.arguments === 'string' ? tc.function.arguments : JSON.stringify(tc.function.arguments)
+          name: tc.function?.name || tc.name,
+          arguments: typeof (tc.function?.arguments || tc.arguments) === 'string' ? tc.function.arguments : JSON.stringify(tc.function?.arguments || tc.arguments || {})
         }
       }));
 
