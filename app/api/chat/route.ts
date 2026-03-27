@@ -32,9 +32,24 @@ export async function POST(req: Request) {
 
   const systemPrompt = `Eres un asistente que ayuda a analizar datos de ventas.${periodInfo}
 
-IMPORTANTE: 
-- La tabla de ventas se llama "ventas_items". No uses "ventas" ni "sales".
-- Al buscar productos más vendidos, EXCLUYE los productos que contengan "Seguro Gratis" o que empiecen por "Instalacion". Solo inclúyelos si el usuario los menciona explícitamente.
+REGLAS OBLIGATORIAS - SIEMPRE CUMPLIR:
+- Tabla: ventas_items
+- FECHA: usar siempre fecha_captura (no fecha)
+- DUPLICADOS: si hay registros duplicados (mismo folio+item_index), usar solo el de synced_at más reciente
+- SIEMPRE excluye: tipo_de_pago CONTIENE 'cancelado' 
+- SIEMPRE excluye: tipo_de_pago CONTIENE 'instalación' (esto aplica también para puertas - nunca contar puertas con instalación)
+- Tipos de productos:
+  - PUERTAS: descripcion empieza con 'H-' o 'h-'
+  - SEGUROS: descripcion CONTIENE 'seguro' o 'Seguro'
+  - INSTALACIONES: descripcion empieza con 'Instalacion' o 'instalacion'
+  - RESTO: cualquier otro producto
+- Por defecto EXCLUYE seguros e instalaciones
+- Búsquedas: usar LIKE con lower() para mayúsculas/minúsculas
+
+OBLIGATORIO - después de obtener el total, SIEMPRE haz estas consultas adicionales:
+1. Desglose por tipo: PUERTAS, SEGUROS, INSTALACIONES, RESTO (usa SUM(cantidad) por tipo)
+2. Top 5 productos más vendidos (agrupa por descripcion, suma cantidad, ordena descendente)
+3. Luego presenta TODOS los resultados juntos
 
 Tienes acceso a estas herramientas:
 - query_ventas: Ejecuta consultas SQL SELECT en la tabla de ventas
@@ -106,10 +121,36 @@ Cuando el usuario pregunte sobre ventas, usa las herramientas para obtener los d
   }
 
   let toolCalls = assistantMessage.tool_calls;
+  const initialReasoning = (assistantMessage as any)?.reasoning || "";
+  
+  // If there's only one tool call (total), add breakdown queries automatically
+  if (toolCalls && toolCalls.length === 1 && toolCalls[0]) {
+    const func = (toolCalls[0] as any).function || toolCalls[0];
+    if (func?.name === "query_ventas") {
+      // Get the original query to extract filters
+      let args = {};
+      try {
+        const argStr = typeof func.arguments === 'string' ? func.arguments : JSON.stringify(func.arguments || {});
+        args = argStr ? JSON.parse(argStr) : {};
+      } catch {}
+      
+      const originalQuery = args.query || "";
+      
+      // Add breakdown by product type queries
+      const queries = [
+        // Puertas
+        originalQuery.replace("SELECT", "SELECT 'PUERTAS' as tipo, descripcion, SUM(cantidad) as cantidad FROM").replace("SELECT", "WITH data AS (").replace("GROUP BY", ") SELECT * FROM data GROUP BY"),
+        // Resto (no H-, no seguro, no instalacion)
+      ];
+      
+      // For now, let's just append the breakdown query as a second tool call
+      // Actually, let's make the model do this by adding to the prompt
+    }
+  }
   
   // Parse tool calls from content if not in tool_calls field
-  if (!toolCalls && assistantMessage?.content) {
-    const content = assistantMessage.content;
+  if (!toolCalls) {
+    const content = assistantMessage?.content || "" + " " + initialReasoning;
     
     // Parse JSON format: {"tool": "query_ventas", "action": "run", "arguments": {...}}
     const jsonMatch = content.match(/"tool"\s*:\s*"(\w+)"[\s\S]*?"arguments"\s*:\s*({[^}]+})/);
@@ -155,6 +196,7 @@ Cuando el usuario pregunte sobre ventas, usa las herramientas para obtener los d
     let maxRounds = 3;
     let round = 0;
     let lastContent = "";
+    let allToolResults: {query: string, result: string}[] = [];
 
     while (round < maxRounds) {
       const toolResults = [];
@@ -176,6 +218,8 @@ Cuando el usuario pregunte sobre ventas, usa las herramientas para obtener los d
         
         if (toolName === "query_ventas") {
           result = await callMCPTool("query_ventas", args);
+          const queryStr = (args as any).query || "";
+          allToolResults.push({ query: queryStr, result: result });
         } else if (toolName === "get_schema") {
           result = await callMCPTool("get_schema", {});
         } else if (toolName === "get_sucursales") {
@@ -218,7 +262,19 @@ Cuando el usuario pregunte sobre ventas, usa las herramientas para obtener los d
       // Save content in case we need to return it
       const contentToCheck = nextMessage?.content || "";
       const reasoningToCheck = (nextMessage as any)?.reasoning || "";
-      lastContent = contentToCheck;
+      
+      // Also save reasoning as content if content is empty
+      if (contentToCheck) {
+        lastContent = contentToCheck;
+      } else if (reasoningToCheck) {
+        lastContent = reasoningToCheck;
+      }
+      
+      if (!nextMessage) {
+        return new Response(lastContent || "Error: No message from model", {
+          headers: { "Content-Type": "text/plain" }
+        });
+      }
       
       // Parse tool calls from content or reasoning if not in tool_calls field
       if (!nextToolCalls) {
@@ -227,6 +283,11 @@ Cuando el usuario pregunte sobre ventas, usa las herramientas para obtener los d
         // Try to find tool call in JSON format
         const toolMatch = searchText.match(/"tool"\s*:\s*"(\w+)"/);
         const argsMatch = searchText.match(/"arguments"\s*:\s*(\{[\s\S]*?\})/);
+        
+        console.log("searchText length:", searchText.length);
+        console.log("Searching for tool in:", searchText.substring(0, 300));
+        console.log("Tool match:", toolMatch);
+        console.log("Args match:", argsMatch);
         
         if (toolMatch && argsMatch) {
           const toolName = toolMatch[1];
@@ -245,9 +306,39 @@ Cuando el usuario pregunte sobre ventas, usa las herramientas para obtener los d
       }
       
       if (!nextToolCalls || nextToolCalls.length === 0) {
-        // If there's content, return it. Otherwise try to parse from content
-        if (lastContent && !lastContent.includes('"tool"')) {
-          return new Response(lastContent, {
+        // If we have tool results, format them nicely with another LLM call
+        if (allToolResults.length > 0) {
+          try {
+            const formatPrompt = `El usuario preguntó: "${userText}"
+
+Resultados de las consultas realizadas:
+${allToolResults.map((tr, i) => `Consulta ${i+1}: ${tr.result}`).join('\n\n')}}
+
+PRESENTA LOS RESULTADOS de forma clara y amigable para el usuario. NO muestres las consultas SQL. Solo los datos relevantes y organizados en tablas si es necesario.`;
+
+            const formatResponse = await openai.chat.completions.create({
+              messages: [
+                { role: "system", content: "Eres un asistente que presenta resultados de ventas de forma clara y profesional. Nunca muestres código SQL." },
+                { role: "user", content: formatPrompt }
+              ],
+              model: "openai/gpt-oss-120b:free"
+            });
+
+            const formattedText = formatResponse.choices[0]?.message?.content;
+            if (formattedText) {
+              return new Response(formattedText, {
+                headers: { "Content-Type": "text/plain" }
+              });
+            }
+          } catch (e) {
+            console.log("Error formatting:", e);
+          }
+        }
+        
+        // Return content or reasoning if there's no tool call
+        const responseText = lastContent || reasoningToCheck || "Sin respuesta";
+        if (responseText && responseText.length > 10) {
+          return new Response(responseText, {
             headers: { "Content-Type": "text/plain" }
           });
         }
