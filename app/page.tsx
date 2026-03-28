@@ -14,24 +14,30 @@ export default function Home() {
 
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || loading) return;
+    
+    if (loading) return;
+    
+    const userMessage = input.trim();
+    if (!userMessage) return;
 
-    const userMessage = input;
+    const userMsg = { role: "user" as const, content: userMessage };
+    const newMsgs = [...messages, userMsg];
+    
     setInput("");
-    setMessages(prev => [...prev, { role: "user", content: userMessage }]);
     setLoading(true);
-
+    setMessages(newMsgs);
+    
     try {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          messages: [...messages, { role: "user", content: userMessage }]
+          messages: [userMsg]
         })
       });
 
       const text = await response.text();
-      setMessages(prev => [...prev, { role: "assistant", content: text }]);
+      setMessages([...newMsgs, { role: "assistant", content: text }]);
     } catch (error) {
       setMessages(prev => [...prev, { role: "assistant", content: "Error: " + error }]);
     } finally {
@@ -78,6 +84,12 @@ export default function Home() {
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !loading && input.trim()) {
+                e.preventDefault();
+                sendMessage(e as any);
+              }
+            }}
             placeholder="Escribe tu pregunta..."
             className="flex-1 p-3 border rounded-lg"
             disabled={loading}

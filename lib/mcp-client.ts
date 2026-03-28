@@ -4,7 +4,8 @@ export async function callMCPTool(
   toolName: string,
   args: Record<string, unknown> = {}
 ): Promise<string> {
-  console.log("Calling MCP:", MCP_SERVER_URL, toolName, args);
+  const startTime = Date.now();
+  console.log(`[MCP → ] ${toolName}`, JSON.stringify(args).slice(0, 200));
   
   const response = await fetch(`${MCP_SERVER_URL}/mcp`, {
     method: "POST",
@@ -20,7 +21,8 @@ export async function callMCPTool(
     }),
   });
 
-  console.log("MCP response status:", response.status);
+  const duration = Date.now() - startTime;
+  console.log(`[MCP ← ] ${toolName} (${duration}ms) status: ${response.status}`);
   
   if (!response.ok) {
     const errorText = await response.text();
@@ -30,7 +32,9 @@ export async function callMCPTool(
   const data = await response.json();
 
   if (data.result?.content?.[0]?.type === "text") {
-    return data.result.content[0].text;
+    const text = data.result.content[0].text;
+    console.log(`[MCP ← ] ${toolName} result:`, text.slice(0, 500));
+    return text;
   }
 
   return JSON.stringify(data);
