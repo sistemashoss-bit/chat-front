@@ -40,22 +40,25 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-100 p-4">
+    <div className="min-h-screen bg-sky-50 p-4">
       <div className="max-w-2xl mx-auto">
-        <h1 className="text-2xl font-bold text-center mb-4 text-gray-800">
-          Chat con datos de ventas
+        <h1 className="text-9xl font-extrabold text-center mb-4 text-gray-800">
+          Hoss IA
         </h1>
+        <h2 className="text-5xl font-bold text-center mb-4 text-gray-800">
+          Chat con datos de ventas
+        </h2>
 
         <div className="bg-white rounded-lg shadow-lg h-[500px] overflow-y-auto p-4 mb-4">
           {messages.length === 0 && (
-            <p className="text-gray-500 text-center">
-              Pregunta sobre tus ventas...
+            <p className="text-gray-600 text-3xl text-center">
+              Pregunte sobre sus ventas...
             </p>
           )}
           {messages.map((m, i) => (
             <div key={i} className={`mb-4 ${m.role === "user" ? "text-right" : "text-left"}`}>
-              <div className={`inline-block max-w-[80%] p-3 rounded-lg ${
-                m.role === "user" ? "bg-blue-500 text-white" : "bg-gray-200 text-gray-800"
+              <div className={`inline-block max-w-[80%] rounded-lg p-3 ring-1 ring-black/5 shadow-[0_10px_30px_rgba(0,0,0,0.25)] ${
+                m.role === "user" ? "bg-indigo-700 text-white text-2xl font-medium" : "bg-indigo-100 text-black text-2xl font-medium"
               }`}>
                 <div className="whitespace-pre-wrap">{m.content}</div>
               </div>
@@ -63,7 +66,7 @@ export default function Home() {
           ))}
           {loading && (
             <div className="text-left">
-              <div className="inline-block bg-gray-200 p-3 rounded-lg">
+              <div className="inline-block rounded-lg text-2xl text-black font-medium  bg-indigo-100 p-3 ring-1 ring-black/5 shadow-[0_10px_30px_rgba(0,0,0,0.18)]">
                 <span className="animate-pulse">Pensando...</span>
               </div>
             </div>
