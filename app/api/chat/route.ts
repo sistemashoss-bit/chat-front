@@ -47,7 +47,7 @@ export async function POST(req: Request) {
             }
           }
         }
-      }];
+      }] as unknown as Parameters<typeof openai.chat.completions.create>[0]["tools"];
       
       const aiResponse = await openai.chat.completions.create({
         messages: [
@@ -59,7 +59,7 @@ export async function POST(req: Request) {
         tool_choice: { type: "function", function: { name: "predict_puertas" } }
       });
       
-      const toolCall = aiResponse.choices[0]?.message?.tool_calls?.[0];
+      const toolCall = aiResponse.choices[0]?.message?.tool_calls?.[0] as any;
       const args = toolCall?.function?.arguments ? JSON.parse(toolCall.function.arguments) : {};
       const sucursal = args.sucursal || null;
       const meses = args.meses || 3;
@@ -77,7 +77,7 @@ export async function POST(req: Request) {
       }
       responseText += `Meses predichos: ${predJson.meses_predecidos}\n\n`;
       
-      for (const [puerta, data] of Object.entries(predJson.predicciones_por_puerta)) {
+      for (const [puerta, data] of Object.entries(predJson.predicciones_por_puerta) as [string, { metodo_usado: string; predicciones: { mes: string; cantidad: number }[] }][]) {
         responseText += `🚪 ${puerta}\n`;
         responseText += `   Método: ${data.metodo_usado}\n`;
         responseText += `   Predicciones:\n`;
