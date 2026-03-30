@@ -29,6 +29,67 @@ export async function POST(req: Request) {
     const currentMonth = `${year}-${month}`;
     const nextMonth = month === "12" ? `${year + 1}-01` : `${year}-${String(parseInt(month) + 1).padStart(2, "0")}`;
 
+    const userLower = userText.toLowerCase();
+    const isPrediccion = userLower.includes("predic") || userLower.includes("pronosti") || userLower.includes("van a vender") || userLower.includes("se vender") || userLower.includes("vender") || userLower.includes("predecir") || userLower.includes("forecast") || userLower.includes("proyect");
+    const isPuertas = userLower.includes("puerta");
+    
+    if (isPrediccion && isPuertas) {
+      const tools = [{
+        type: "function",
+        function: {
+          name: "predict_puertas",
+          description: "Predice ventas de puertas para N meses usando datos históricos",
+          parameters: {
+            type: "object",
+            properties: {
+              sucursal: { type: "string", description: "Nombre de la sucursal (ej: Altamisa, Leones). Omitir para total" },
+              meses: { type: "number", description: "Cantidad de meses a predecir (ej: 1, 2, 3, 6)" }
+            }
+          }
+        }
+      }];
+      
+      const aiResponse = await openai.chat.completions.create({
+        messages: [
+          { role: "system", content: "Eres un asistente que extrae parámetros para predicciones. Extrae: 1) sucursal (nombre de tienda), 2) meses (número). Si no hay sucursal, usa null. Si no hay número, deduce: 'siguiente mes' = 1, 'próximos 3 meses' = 3, etc." },
+          { role: "user", content: userText }
+        ],
+        model: "mistralai/mistral-small-2603",
+        tools,
+        tool_choice: { type: "function", function: { name: "predict_puertas" } }
+      });
+      
+      const toolCall = aiResponse.choices[0]?.message?.tool_calls?.[0];
+      const args = toolCall?.function?.arguments ? JSON.parse(toolCall.function.arguments) : {};
+      const sucursal = args.sucursal || null;
+      const meses = args.meses || 3;
+      
+      const predResult = await callMCPTool("predict_puertas", { sucursal, meses });
+      const predJson = JSON.parse(predResult);
+      
+      if (!predJson.success) {
+        return new Response(`Error: ${predJson.error}`, { status: 400 });
+      }
+      
+      let responseText = `📊 PREDICCIÓN DE PUERTAS\n\n`;
+      if (predJson.sucursal !== "total") {
+        responseText += `Sucursal: ${predJson.sucursal}\n`;
+      }
+      responseText += `Meses predichos: ${predJson.meses_predecidos}\n\n`;
+      
+      for (const [puerta, data] of Object.entries(predJson.predicciones_por_puerta)) {
+        responseText += `🚪 ${puerta}\n`;
+        responseText += `   Método: ${data.metodo_usado}\n`;
+        responseText += `   Predicciones:\n`;
+        for (const p of data.predicciones) {
+          responseText += `   - ${p.mes}: ${p.cantidad} unidades\n`;
+        }
+        responseText += `\n`;
+      }
+      
+      return new Response(responseText, { headers: { "Content-Type": "text/plain" } });
+    }
+
     const prompt = `Eres un ASISTENTE DE VENTAS de una ferretería. Tu trabajo es generar consultas SQL para responder preguntas sobre ventas.
 
 TABLA: ventas_items
