@@ -20,41 +20,62 @@ export async function POST(req: Request) {
   console.log("[CHAT]", userText);
 
   try {
-    const [schema, period] = await Promise.all([
-      callMCPTool("get_schema", {}),
-      callMCPTool("get_available_period", {})
-    ]);
-
-    const schemaJson = JSON.parse(schema);
+    const period = await callMCPTool("get_available_period", {});
     const periodJson = JSON.parse(period);
 
     const today = new Date();
     const year = today.getFullYear();
     const month = String(today.getMonth() + 1).padStart(2, "0");
     const currentMonth = `${year}-${month}`;
-    
-    const prompt = `SQL para: "${userText}"
+    const nextMonth = month === "12" ? `${year + 1}-01` : `${year}-${String(parseInt(month) + 1).padStart(2, "0")}`;
+
+    const prompt = `Eres un ASISTENTE DE VENTAS de una ferretería. Tu trabajo es generar consultas SQL para responder preguntas sobre ventas.
 
 TABLA: ventas_items
-PERIODO: ${periodJson.fecha_min} a ${periodJson.fecha_max}
+FECHA DISPONIBLE: ${periodJson.fecha_min} a ${periodJson.fecha_max}
 
-COLUMNAS: fecha, sucursal, cantidad, precio_final, descripcion, metodo_de_venta
+COLUMNAS VÁLIDAS (SOLO USA ESTAS - NO INVENTES OTRAS):
+- folio (string) - ID único de transacción
+- item_index (integer) - Índice del item dentro del folio
+- fecha_captura (date) - Fecha cuando se capturó en el sistema
+- fecha (date) - Fecha de la venta
+- departamento (string) - Departamento de la tienda
+- cliente (string) - Nombre del cliente
+- metodo_de_venta (string) - Método de venta (presencial, en línea, etc.)
+- num_sucursal (integer) - Número de sucursal
+- sucursal (string) - Nombre de la sucursal
+- vendedor (string) - Nombre del vendedor
+- cantidad (integer) - Cantidad de productos
+- categoria (string) - Categoría del producto
+- descripcion (string) - Descripción del producto
+- precio_final (float) - Precio final de la venta
+- tipo_de_pago (string) - Tipo de pago (efectivo, tarjeta, etc.)
+- salida (string) - Tipo de salida
+- comentario_cupon (string) - Comentario de cupón
+- monto_cupon (float) - Monto del cupón
+- synced_at (datetime) - Fecha de última sincronización
 
-Si pregunta por DINERO/TOTAL/VENDIO:
-- USA: SUM(precio_final)
-- Si filtra por método de pago: metodo_de_venta ILIKE '%efectivo%'
+REGLAS:
+1. SOLO usa las columnas de arriba
+2. Para "este mes": fecha >= '${currentMonth}-01' AND fecha < '${nextMonth}-01'
+3. Para suma de dinero: SUM(precio_final)
+4. Para cantidad de productos: SUM(cantidad)
+5. Para filtrar por método de pago usa tipo_de_pago: tipo_de_pago ILIKE '%[palabra del usuario%'
+6. Para buscar productos en descripción: descripcion ILIKE '%[palabra%'
+7. Para filtrar por sucursal SIEMPRE usa ILIKE: sucursal ILIKE '%Altamisa%' (no uses =)
+8. Para ventas por sucursal: GROUP BY sucursal
+9. Para ventas por categoría: GROUP BY categoria
+10. IMPORTANTE: Si pregunta por puertas (códigos H-0101, H-001, etc): descripcion ILIKE 'H-%'. Si pregunta por cerraduras: descripcion ILIKE '%cerradura%'. Siempre incluye GROUP BY descripcion y SELECT descripcion, SUM(cantidad)
 
-Si pregunta por PUERTAS:
-- Filtro: descripcion LIKE 'H-%'
-- GROUP BY descripcion
+EJEMPLOS:
+- "¿Cuánto vendí este mes?": SELECT SUM(precio_final) FROM ventas_items WHERE fecha >= '${currentMonth}-01' AND fecha < '${nextMonth}-01'
+- "¿Cuántas puertas vendió Altamisa este mes?": SELECT descripcion, SUM(cantidad) as cantidad FROM ventas_items WHERE descripcion ILIKE 'H-%' AND sucursal ILIKE '%altamisa%' AND fecha >= '${currentMonth}-01' AND fecha < '${nextMonth}-01' GROUP BY descripcion ORDER BY cantidad DESC
+- "¿Ventas por sucursal este mes?": SELECT sucursal, SUM(precio_final) FROM ventas_items WHERE fecha >= '${currentMonth}-01' AND fecha < '${nextMonth}-01' GROUP BY sucursal
 
-"este mes" = ${currentMonth}
-SUCURSAL: sucursal ILIKE '%leones%'
-
-Usa: SUM(precio_final), ILIKE, >= y <
-NO: metodo_pago, JOIN, BETWEEN
-
-Responde SOLO: \`\`\`sql\nSELECT...\n\`\`\``;
+Responde SOLO:
+\`\`\`sql
+SELECT...
+\`\`\``;
 
     const aiResponse = await openai.chat.completions.create({
       messages: [
@@ -104,9 +125,15 @@ Responde SOLO: \`\`\`sql\nSELECT...\n\`\`\``;
         const hasDesc = keys.includes("descripcion");
         
         if (hasDesc) {
-          const total = data.rows.reduce((sum: number, row: any) => sum + (row.total || row.sum || 0), 0);
-          const lines = data.rows.map((row: any) => `${row.descripcion}: ${row.total || row.sum || 0}`);
-          value = `Total: ${total}\n` + lines.join("\n");
+          const hasCantidad = keys.includes("cantidad");
+          const total = data.rows.reduce((sum: number, row: any) => sum + (row.total || row.sum || row.cantidad || 0), 0);
+          if (hasCantidad) {
+            const lines = data.rows.map((row: any) => `${row.descripcion}: ${row.cantidad}`);
+            value = lines.join("\n") + `\nTotal: ${total}`;
+          } else {
+            const lines = data.rows.map((row: any) => `${row.descripcion}: ${row.total || row.sum || 0}`);
+            value = `Total: ${total}\n` + lines.join("\n");
+          }
         } else {
           value = JSON.stringify(data.rows, null, 2);
         }
